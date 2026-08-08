@@ -1423,3 +1423,77 @@ records a cell.
 2. Both `[chain-order]` blocks present, so the two orderings can be laid side by
    side.
 3. Then, and only then, a verdict on the Rabby cell.
+
+## 2026-08-08 — CI run #17. All 8 cells. Attribution PROVEN. Still no comparison.
+
+**Matrix #17 (`07a1db3`): 8 passed, 13.0m.** MetaMask/connect executed this time,
+so every cell produced a verdict. The 10-minute fixture-setup timeout from #16 did
+not recur — consistent with it being environmental rather than logical.
+
+```
+Aave/MetaMask/connect   = pass   chip="0xb1...c171"
+Aave/MetaMask/sign      = pass   Aave/MetaMask/reconnect = pass   .../reject = pass
+Aave/Rabby/connect      = fail   chipVisible=false, chainId=0x14a34 (correct)
+Aave/Rabby/sign         = pass   Aave/Rabby/reconnect    = pass   .../reject = pass
+```
+
+### Replacing the heuristic with raw stack frames paid off immediately
+
+```
++ 15706ms  wallet_switchEthereumChain  chainId=0xa869
+             p.request (<anonymous>:22:26)
+             Object.switchChain (https://app.aave.com/_next/static/chunks/pages/_app-*.js)
+             async Object.connect (https://app.aave.com/_next/static/chunks/pages/_app-*.js)
++ 15711ms  wallet_addEthereumChain     chainId=0xa869 (Avalanche Fuji)
+             Object.switchChain (https://app.aave.com/_next/...)      <- same call path
++ 47851ms  wallet_addEthereumChain     chainId=0x14a34 (Base Sepolia)
+             eval (eval at evaluate (:234:30), <anonymous>)           <- page.evaluate = ours
+```
+
+**No longer a guess.** The two Fuji requests originate in Aave's own bundle,
+inside `Object.connect` calling `Object.switchChain` — the canonical wagmi
+recovery (try switch, catch unrecognised-chain, add). Ours arrives via
+`page.evaluate`, 32 seconds later. Run #16's heuristic had labelled all three
+`harness?`; the frames settle it beyond argument.
+
+That is the second time in this file that **printing raw evidence beat computing a
+label** (the first: reading the chain id from the union of innerText and input
+values instead of picking a side).
+
+### THIRD RUN, THIRD REASON, STILL NO COMPARISON — and all three were mine
+
+| run | why no comparison |
+|---|---|
+| #16 | hook fitted to `fixtures/rabby.ts` only; and MetaMask/connect died in setup |
+| #17 | hook in BOTH fixtures — but **`readChainLog` is only called from `connect-flow.connectWallet`**, and MetaMask still runs `helpers.connectWallet`. The MetaMask fixture collected a timeline that nothing ever printed. |
+
+Instrumenting the collection and forgetting the readout is the same error as
+capturing a screenshot on every run and never opening one. **Evidence that is
+gathered but never looked at is not evidence.**
+
+### Fixed — `utils/chain-trace.ts`
+
+`readChainLog` could not simply be called from `helpers.ts`: `connect-flow.ts`
+imports `helpers.ts`, so that would have made `helpers -> connect-flow -> helpers`
+a cycle, whose failure mode is an undefined binding at runtime inside a wallet
+test. So the trace moved to its own module with **no dependencies but a type**;
+`connect-flow.ts` re-exports it for existing imports, both fixtures import it
+directly, and `helpers.connectWallet` now ends with
+`readChainLog(page, 'MetaMask connect')`.
+
+MetaMask stays on its own connect path deliberately — it is the green one, and
+instrumenting it without changing it is the whole point of a reference.
+
+### What the next run finally makes answerable
+
+MetaMask `connect` **passes with a chip**; Rabby `connect` **fails without one**;
+both under the same shared chain policy. Two readings will separate:
+
+- **MetaMask is also asked for Fuji and also declines, yet still gets a chip** ->
+  the divergence is real and lives above the harness. The Rabby cell can carry a
+  verdict, and the finding is about the dApp's per-connector behaviour.
+- **MetaMask is never asked for Fuji** -> the two columns are not being asked the
+  same question, the comparison is not like-for-like, and the cell stays blocked
+  until it is.
+
+Nothing is recorded until one of those is on screen.

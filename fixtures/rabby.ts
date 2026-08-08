@@ -5,7 +5,7 @@ import path from 'node:path'
 import 'dotenv/config'
 import { browserArgsFor, rabbyExtensionPath, rabbyProfilePath } from '../utils/wallet-cache'
 import { unlockIfLocked } from '../utils/rabby-actions'
-import { CHAIN_REQUEST_HOOK } from '../utils/connect-flow'
+import { CHAIN_REQUEST_HOOK } from '../utils/chain-trace'
 
 /**
  * The Rabby fixture — sibling of `fixtures/metamask.ts`.

@@ -3,6 +3,7 @@ import { connect, dashboard, modal, nav } from './selectors'
 import * as mm from './metamask-actions'
 import { BASE_SEPOLIA, addChainParams } from './networks'
 import { evalChainId, evalAddChain, RDNS } from './provider-eval'
+import { readChainLog } from './chain-trace'
 
 /**
  * Behaviour-level helpers. Specs read as user intent; the DOM lives in
@@ -163,6 +164,12 @@ export async function connectWallet(
     // asks the wallet to add Base Sepolia and switch to it.
     await ensureNetwork(page, context, extensionId)
   })
+
+  // Same readout the shared path does. MetaMask still runs THIS connect
+  // implementation (it is the one producing a green cell), so without this call
+  // the fixture collects a timeline that nothing ever prints — which is exactly
+  // why runs #16 and #17 could not compare the two columns.
+  await readChainLog(page, 'MetaMask connect')
 
   await capture(page, '1. Wallet connected on Base Sepolia')
 }
