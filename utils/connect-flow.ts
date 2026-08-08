@@ -5,6 +5,11 @@ import { BASE_SEPOLIA, addChainParams } from './networks'
 import { RDNS, evalAddChain, evalChainId } from './provider-eval'
 import * as mm from './metamask-actions'
 import * as rabby from './rabby-actions'
+import { readChainLog } from './chain-trace'
+
+// Re-exported so existing imports keep working; the trace itself lives in
+// chain-trace.ts, which has no dependencies and so cannot create an import cycle.
+export { CHAIN_REQUEST_HOOK, readChainLog, type ChainLogEntry } from './chain-trace'
 
 /**
  * ONE connect path, for every wallet column.
@@ -110,101 +115,6 @@ export const rabbyDriver: WalletDriver = {
   approveFollowUp: async (context, extensionId) => {
     await rabby.approveFollowUpRequests(context, extensionId)
   },
-}
-
-// ---------------------------------------------------------------------------
-// The ordering trace — the measurement the blocked cell is waiting on
-// ---------------------------------------------------------------------------
-
-/**
- * Wrap every announced provider's `request` so that chain calls are logged.
- *
- * MUST be installed with `page.addInitScript` so it runs BEFORE the dApp's own
- * scripts and sees the announcement first — listeners fire in registration
- * order, so registering at document start puts us ahead of wagmi.
- *
- * Wrapping mutates `e.detail.provider` in place, which is the same object
- * reference wagmi receives, so both Aave's calls and ours land in one log with
- * one clock. That is the point: "who asked for which chain, in what order" has
- * been guessed at twice and measured never.
- *
- * A string, not a function — tsx/esbuild rewrites named arrows to add a
- * `__name` helper that does not exist in the page. Three probes have hit this.
- */
-export const CHAIN_REQUEST_HOOK = `(() => {
-  window.__chainLog = []
-  var t0 = Date.now()
-  window.addEventListener('eip6963:announceProvider', function (e) {
-    var d = e.detail || {}
-    var p = d.provider
-    if (!p || p.__chainLogWrapped || typeof p.request !== 'function') return
-    p.__chainLogWrapped = true
-    var rdns = (d.info && d.info.rdns) || 'unknown'
-    var orig = p.request.bind(p)
-    p.request = function (args) {
-      try {
-        var m = args && args.method
-        if (m === 'wallet_addEthereumChain' || m === 'wallet_switchEthereumChain') {
-          var stack = ''
-          try { stack = (new Error()).stack || '' } catch (err) { stack = '' }
-          window.__chainLog.push({
-            ms: Date.now() - t0,
-            method: m,
-            rdns: rdns,
-            chainId: (args.params && args.params[0] && args.params[0].chainId) || null,
-            chainName: (args.params && args.params[0] && args.params[0].chainName) || null,
-            // RAW STACK HEAD, not a guess.
-            //
-            // This field used to be 'likelyCaller', a regex over the stack
-            // returning 'harness?' or 'dapp?'. Run #16 tagged ALL THREE requests
-            // 'harness?' — including the two for Avalanche Fuji, which the
-            // harness never asks for and which are certainly the dApp's. Modern
-            // bundlers emit <anonymous> frames, so the regex matched page code
-            // too and the field was wrong on 2 of 3.
-            //
-            // A label that is confidently wrong is worse than no label; that is
-            // METHODOLOGY §7's "provider account=" defect exactly — a value that
-            // was right by luck and described wrong. So: print the top frames
-            // verbatim and let a human attribute. Attribution is a judgement,
-            // and the evidence for it should be visible in the log.
-            stackHead: stack.split('\\n').slice(1, 4).map(function (s) {
-              return s.trim().replace(/^at\\s+/, '').slice(0, 90)
-            })
-          })
-        }
-      } catch (err) { /* never let logging break a request */ }
-      return orig(args)
-    }
-  })
-})()`
-
-export type ChainLogEntry = {
-  ms: number
-  method: string
-  rdns: string
-  chainId: string | null
-  chainName: string | null
-  stackHead: string[]
-}
-
-/** Read the timeline back out and print it. Safe on a page without the hook. */
-export async function readChainLog(page: Page, label: string): Promise<ChainLogEntry[]> {
-  const log = (await page
-    .evaluate(`window.__chainLog || []`)
-    .catch(() => [])) as ChainLogEntry[]
-
-  console.log(`[chain-order] ${label} — ${log.length} chain request(s)`)
-  for (const e of log) {
-    console.log(
-      `  +${String(e.ms).padStart(6)}ms  ${e.method}  chainId=${e.chainId ?? '-'}` +
-        `${e.chainName ? ` (${e.chainName})` : ''}  rdns=${e.rdns}`,
-    )
-    for (const frame of e.stackHead ?? []) console.log(`             ${frame}`)
-  }
-  if (!log.length) {
-    console.log('  (none — either the hook was not installed via addInitScript, or nothing asked)')
-  }
-  return log
 }
 
 // ---------------------------------------------------------------------------

@@ -9,7 +9,7 @@ import {
   unlockMetaMask,
   walletProfilePath,
 } from '../utils/wallet-cache'
-import { CHAIN_REQUEST_HOOK } from '../utils/connect-flow'
+import { CHAIN_REQUEST_HOOK } from '../utils/chain-trace'
 
 /**
  * The `testWithMetaMask` fixture: every test starts with a real MetaMask,
