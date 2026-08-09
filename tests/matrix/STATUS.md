@@ -1497,3 +1497,82 @@ both under the same shared chain policy. Two readings will separate:
   until it is.
 
 Nothing is recorded until one of those is on screen.
+
+## 2026-08-09 — CI run #18. **THE ORDERING HYPOTHESIS IS DEAD.** Both timelines, side by side.
+
+`9a5e2e3`, 8 passed, 13.0m. Same eight verdicts as #17. And for the first time
+since the cell was blocked on 2026-08-02, **both columns printed a timeline.**
+
+```
+MetaMask connect — 3 chain request(s)
+  + 20189ms  wallet_switchEthereumChain  0xa869                    Object.switchChain (app.aave.com/_next/…)  async Object.connect
+  + 20199ms  wallet_addEthereumChain     0xa869 (Avalanche Fuji)   Object.switchChain (app.aave.com/_next/…)  async Object.connect
+  + 62316ms  wallet_addEthereumChain     0x14a34 (Base Sepolia)    eval (eval at evaluate …)
+
+Rabby connect — 3 chain request(s)
+  + 15712ms  wallet_switchEthereumChain  0xa869                    Object.switchChain (app.aave.com/_next/…)  async Object.connect
+  + 15721ms  wallet_addEthereumChain     0xa869 (Avalanche Fuji)   Object.switchChain (app.aave.com/_next/…)  async Object.connect
+  + 47971ms  wallet_addEthereumChain     0x14a34 (Base Sepolia)    eval (eval at evaluate …)
+```
+
+**Identical.** Same three requests, same origin per request, same order. Aave asks
+both wallets for Fuji mid-connect from `Object.connect -> Object.switchChain`;
+ours arrives ~32-42s later via `page.evaluate`. Only the absolute timings differ,
+and MetaMask is simply slower throughout.
+
+### What that settles
+
+The blocked cell's stated reason was:
+
+> *the ORDER in which each fires its Base Sepolia add-chain relative to the dApp's
+> own mid-connect chain-switch request has never been established. If MetaMask's
+> lands before the dApp's request and Rabby's lands after, that is a sequencing
+> artifact of our harness wearing a wallet's name.*
+
+**It does not. Both land after, by the same margin, in the same order.** The
+sequencing artifact hypothesis is dead — six days after it was raised, and by
+measurement rather than by argument.
+
+### What it does NOT settle — the asymmetry moved down a layer
+
+Rabby printed, on the same request:
+```
+[rabby] chain dialog decline: dialog never painted — declining rather than approving something unreadable
+[rabby] chain dialog decline: wrong chain (saw 43113, want 84532)
+[rabby] inputs=["43113","Avalanche Fuji",...]
+```
+**MetaMask printed nothing.** Both call `logChainVerdict` — `metamask-actions.ts:444`
+and `rabby-actions.ts:242` — so the wiring is symmetric. But the log is silent for
+one column and loud for the other, on a request the trace proves both received.
+
+And the silence was **unreadable**, because `logChainVerdict` returned early and
+without a trace for `not-a-chain-dialog`. So "MetaMask logged nothing" meant
+either:
+
+1. the policy never ran — no dialog appeared in its polling window; or
+2. the policy ran, classified the dialog as not-a-chain-dialog, and this function
+   silently swallowed it.
+
+Different facts, different consequences, and no amount of re-reading separates
+them. **A branch that returns without a trace makes its own absence
+unfalsifiable** — the same defect class as `isVisible()` ignoring its timeout, and
+as a screenshot captured but never opened.
+
+**Fixed:** `not-a-chain-dialog` now prints too, with `painted=` and any
+`sawChainId`, which is the minimum needed to tell it apart from silence.
+
+### The cell stays `blocked` — but the reason has narrowed twice now
+
+- 08-02: "the two columns run different connect implementations" -> fixed
+- 08-08: "the ordering has never been established" -> **established, identical**
+- 08-09: "we cannot see what MetaMask does with the same dialog" -> instrumented
+
+Next run answers it. Two readings:
+
+- **MetaMask logs a decline too, and still gets a chip** -> both wallets receive
+  the same request, both decline, and only one dApp connection survives. That is a
+  real per-connector difference in the dApp, measured symmetrically, and the cell
+  can finally carry a verdict.
+- **MetaMask logs `not-a-chain-dialog`, or nothing reaches the policy at all** ->
+  the two columns are not being asked the same question at the dialog layer, and
+  the harness still differs somewhere below `approveFollowUpRequests`.

@@ -187,9 +187,35 @@ export function decideChainDialog(
       }
 }
 
-/** One log line, same shape for every wallet, so runs stay comparable by eye. */
+/**
+ * One log line, same shape for every wallet, so runs stay comparable by eye.
+ *
+ * `not-a-chain-dialog` USED TO RETURN SILENTLY, and that silence cost run #18.
+ *
+ * The chain-order trace proved Aave asks BOTH columns for Avalanche Fuji, in the
+ * same order, from the same call path. Rabby then logged two declines. MetaMask
+ * logged nothing at all — and "nothing" was indistinguishable between:
+ *
+ *   - the policy never ran (no dialog appeared in the polling window), and
+ *   - the policy ran, classified the dialog as not-a-chain-dialog, and was
+ *     silently skipped by this very function.
+ *
+ * Those are different facts with different consequences for the verdict, and no
+ * amount of re-reading the log could separate them. A branch that returns
+ * without a trace makes its own absence unfalsifiable.
+ *
+ * Now every decision prints. `not-a-chain-dialog` is the common case and would
+ * be noisy on every transaction confirm, so it prints only what is needed to
+ * tell it apart from silence: the decision, and whether anything was painted.
+ */
 export function logChainVerdict(wallet: string, verdict: ChainVerdict, reading: ChainDialogReading): void {
-  if (verdict.decision === 'not-a-chain-dialog') return
+  if (verdict.decision === 'not-a-chain-dialog') {
+    console.log(
+      `  [${wallet}] chain dialog not-a-chain-dialog (painted=${reading.painted}` +
+        `${reading.sawChainId ? `, sawChainId=${reading.sawChainId}` : ''})`,
+    )
+    return
+  }
   console.log(`  [${wallet}] chain dialog ${verdict.decision}: ${verdict.reason}`)
   if (verdict.decision === 'decline' && reading.inputs.length) {
     console.log(`  [${wallet}] inputs=${JSON.stringify(reading.inputs)}`)
