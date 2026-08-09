@@ -214,6 +214,25 @@ export function logChainVerdict(wallet: string, verdict: ChainVerdict, reading: 
       `  [${wallet}] chain dialog not-a-chain-dialog (painted=${reading.painted}` +
         `${reading.sawChainId ? `, sawChainId=${reading.sawChainId}` : ''})`,
     )
+    // PRINT WHAT IT ACTUALLY SAID.
+    //
+    // Run #19: MetaMask classified every connect dialog `not-a-chain-dialog`
+    // while Rabby read the same request as a chain dialog and declined it. Since
+    // `not-a-chain-dialog` falls through to a confirm click
+    // (metamask-actions.ts:441-459), MetaMask approved the very network switch
+    // the guard exists to refuse — inert on one column, active on the other.
+    //
+    // The detector is a regex over phrasing. It matches Rabby's "Add Custom
+    // Network to Rabby" and evidently not whatever MetaMask 13.39.1 renders. The
+    // fix is one regex, and the ONLY safe way to write it is to read the real
+    // wording first: guessing a selector from a minified bundle is what cost a
+    // day on the 13.13.1 -> 13.39.1 testid rename.
+    //
+    // Truncated to 300 chars — enough to identify the screen, short enough that
+    // a transaction confirm does not flood a 13-minute run.
+    if (reading.painted && reading.haystack) {
+      console.log(`  [${wallet}] saw: ${JSON.stringify(reading.haystack.slice(0, 300))}`)
+    }
     return
   }
   console.log(`  [${wallet}] chain dialog ${verdict.decision}: ${verdict.reason}`)

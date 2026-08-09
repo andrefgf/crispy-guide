@@ -1576,3 +1576,71 @@ Next run answers it. Two readings:
 - **MetaMask logs `not-a-chain-dialog`, or nothing reaches the policy at all** ->
   the two columns are not being asked the same question at the dialog layer, and
   the harness still differs somewhere below `approveFollowUpRequests`.
+
+## 2026-08-09 — CI run #19. **The symmetry fix never took. MetaMask's guard is inert.**
+
+`119b472`, 8 passed. One new log line answered a week-old question.
+
+```
+[metamask] chain dialog not-a-chain-dialog (painted=true)      x3
+[metamask] chain dialog not-a-chain-dialog (painted=true, sawChainId=2026)
+[rabby]    chain dialog decline: dialog never painted — declining rather than approving something unreadable
+[rabby]    chain dialog decline: wrong chain (saw 43113, want 84532)
+```
+
+**Both columns run the policy. Only one column's detector fires.**
+
+MetaMask classified every connect dialog as `not-a-chain-dialog`, all painted. And
+`metamask-actions.ts:441-459` (read, not inferred) does this:
+
+```ts
+if (kind === 'confirm') { … if (verdict.decision === 'decline') { cancel; continue } }
+// falls through ↓
+const enabled = await button.isEnabled()   // → clicks CONFIRM
+```
+
+**`not-a-chain-dialog` falls through and confirms.** So MetaMask approved Aave's
+Avalanche Fuji request. Rabby's detector matched (`saw 43113`) and declined it.
+
+### This is the 2026-07-30 retraction, unfixed — it only changed shape
+
+| | 07-30 (retracted) | 08-09 (now) |
+|---|---|---|
+| MetaMask | no chain check at all -> blind-approves Fuji | chain check present, **detector never matches** -> falls through -> approves Fuji |
+| Rabby | declines anything not 84532 | unchanged |
+| outcome | **identical** | **identical** |
+
+The behaviour was never made symmetric. A guard that cannot recognise the dialog
+it exists to guard is not a weaker guard, it is *no guard*, and it reads as one in
+every code review because the call is right there on line 442.
+
+That is why the trace mattered: `logChainVerdict` returning silently for
+`not-a-chain-dialog` hid an inert guard for eight days behind a line of code that
+looked correct.
+
+### Consequence: MetaMask/connect must be RETRACTED too
+
+`matrix/data/results.csv` carries `Aave/MetaMask/connect = pass` with a ⚑ reading
+*"not been shown wrong, so not retracted; not been shown right, so not trusted."*
+
+**It has now been shown wrong.** The pass is consistent with the wallet sitting on
+**Avalanche Fuji** when the chip was read — the 07-30 A/B established that the chip
+renders *only* when the wallet complies and moves to Fuji. The cell never records
+the chain at the moment it reads the chip, so `chain=base-sepolia` in that note is
+the market label, not a measurement.
+
+- `Aave/MetaMask/connect` -> **blocked** (was `pass ⚑`)
+- `Aave/Rabby/connect` -> stays **blocked**
+
+Matrix drops to **6 measured · 2 blocked · 8 pending**. That is the honest count.
+
+### Root cause to fix next, and it is narrow
+
+`chain-policy.isChainDialog` keys on action phrasing. It matches Rabby's
+"Add Custom Network to Rabby" form and does **not** match whatever MetaMask
+13.39.1 renders. Also `sawChainId=2026` on one reading — the chain-id reader
+scraped a **year** off the page, so it is finding no real chain id there either.
+
+**Next step: log the raw dialog text on `not-a-chain-dialog` (truncated), so the
+actual MetaMask wording is on record.** Do not guess the regex — that is how the
+testid rename cost a day. Read what the dialog says, then match it.
