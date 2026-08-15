@@ -1644,3 +1644,136 @@ scraped a **year** off the page, so it is finding no real chain id there either.
 **Next step: log the raw dialog text on `not-a-chain-dialog` (truncated), so the
 actual MetaMask wording is on record.** Do not guess the regex — that is how the
 testid rename cost a day. Read what the dialog says, then match it.
+
+## 2026-08-15 — the detector is testable now, and hardened where it was blind
+
+Run #19 left one instruction: capture MetaMask's real add-network wording, then
+match it — do not guess. That is still the gate, and it needs a browser plus the
+wallet cache, so it stays a run on a real machine. What changed today is
+everything AROUND that gate, so the moment the wording is captured the fix is a
+two-line drop-in, and the policy can no longer go inert unnoticed.
+
+### 1. The detector is a named, unit-tested function
+
+`chain-policy.isChainDialog` was an inline regex inside `readChainDialog`, so the
+one predicate that decides verdicts could only ever be exercised by a 13-minute
+wallet run. It is now `export function looksLikeChainDialog(text)` — behaviour
+identical — pinned by `unit/chain-policy.test.ts` (13 assertions, runs in ms via
+`pnpm run test:unit`, no browser). The Rabby wording it matches and the
+transaction / connect wording it must NOT match are regression-locked. A guard
+that goes inert again fails a test in milliseconds instead of hiding for eight
+days behind a green suite.
+
+### 2. The chain match now accepts hex, not just decimal
+
+`sawChainId=2026` — a *year* — was the tell that the decimal chain-id reader saw
+no decimal id on MetaMask's screen at all. If MetaMask prints the id in hex,
+`decideChainDialog` matching only `84532` would DECLINE the very Base Sepolia it
+was offered, even after the detector is fixed. The match now accepts either
+spelling of the target (`84532` or `0x14a34`), bounded so `845321` and `0x14a340`
+still miss. Safe by construction: it only ever adds a match for the CORRECT
+chain, so it can turn a wrongful decline of the right chain into an approve — it
+can never approve a wrong one. Both forms are unit-tested, including the hex-only
+case that would have regressed before.
+
+### 3. The capture is one command now, not a "next step"
+
+`scripts/probe-metamask-chain-dialog.ts` (`pnpm run probe:mm:chain`) reproduces
+the exact dialog with NO Aave and NO network: it loads a local page whose every
+request is fulfilled in-process, asks the injected MetaMask provider to add
+Avalanche Fuji, and reads the notification through the SAME `readChainDialog` the
+guard uses. It writes `matrix-out/mm-chain-dialog/reading.json` (+ a screenshot)
+and prints `isChainDialog`, `sawChainId`, `inputs`, and the raw `haystack`.
+Reproducing the prompt without the dApp is the point — run #19 needed a full Aave
+connect just to reach it, which is why it took a CI run to see. This gets the
+same bytes in ~20s on a dev machine.
+
+### The remaining step — unchanged in intent, now trivial to close
+
+1. `pnpm run typecheck`, then `pnpm run probe:mm:chain` → read
+   `matrix-out/mm-chain-dialog/reading.json`.
+2. If `isChainDialog: false` (expected): copy the exact phrase from `haystack`
+   into `looksLikeChainDialog()` and add a case to `unit/chain-policy.test.ts`.
+   That is the whole fix — the fall-through at `metamask-actions.ts:441-459`
+   stops approving Fuji the moment the detector fires.
+3. If `isChainDialog: true`: the detector is fine; the hex hardening above has
+   likely already handled it — re-run the matrix and read the verdict.
+4. Re-run the MetaMask + Rabby connect cells. If both decline Fuji symmetrically,
+   `Aave/*/connect` can finally carry a verdict instead of `blocked`.
+
+Not closed in-session because the capture needs a real browser + the wallet
+cache, and the sandbox this was written in had a Windows-built `node_modules`
+whose symlinks dangle on Linux (tsx, playwright, typescript all unresolved) —
+reinstalling there would have clobbered the real install. The pure decision logic
+WAS verified in-sandbox: `unit/chain-policy.test.ts` runs green under a
+standalone tsx, 13/13.
+
+## 2026-08-15 (later) — run #20. Captured MetaMask's wording. It hides the chain id.
+
+`pnpm run probe:mm:chain` reproduced the Fuji add-network dialog off a local page
+(no Aave, no network) and read it through `readChainDialog`. Verbatim `haystack`:
+
+```
+Add Avalanche Fuji
+
+A site is suggesting additional network details.
+
+Request from
+dapp.mm-chain-probe.local
+
+Network
+Avalanche Fuji
+
+RPC
+api.avax-test.network/ext/bc/C/rpc
+
+Beware of network scams and security risks.
+
+Cancel  Confirm
+```
+
+`isChainDialog=false, sawChainId=null, inputs=[]`. Two facts, and the second is
+the one that mattered:
+
+1. **The detector missed** because MetaMask 13.39.1 says *"suggesting additional
+   network details"* — none of the Rabby-proven alternations. One clause fixes
+   it: `additional network details`.
+
+2. **MetaMask prints NO chain id on this screen at all** — only the network name
+   and the RPC host. `sawChainId=null`, `inputs=[]` say it plainly. This is what
+   `sawChainId=2026` (a *year*) in run #19 was really telling us: there was no
+   chain id on the page to read. It is not hex-vs-decimal — it is absent.
+
+   The consequence is the trap: fixing only the detector would make the guard
+   recognise the Base Sepolia dialog and then **decline it**, because `84532` /
+   `0x14a34` are nowhere on MetaMask's screen. One silent failure swapped for
+   another — the wallet stuck OFF the target instead of ON the wrong one.
+
+### The fix, two parts, both unit-pinned
+
+- `looksLikeChainDialog` gains the `additional network details` clause. Verified
+  against the captured text; a transaction confirm and the connect-permission
+  screen still read as not-a-chain-dialog.
+- `decideChainDialog` now approves the target by **RPC host** as well as chain id
+  (`TARGET_FINGERPRINT`, derived from `BASE_SEPOLIA.rpcUrls`). The RPC endpoint is
+  the field both wallets always render and is the address a transaction is
+  actually sent to — the strongest identity a dialog carries. The network *name*
+  is deliberately not a positive signal: it is the one field a hostile dApp could
+  set freely, whereas an add/switch to the real RPC IS the real network.
+
+`unit/chain-policy.test.ts` now carries the real captured Fuji haystack (→
+decline) and a Base-Sepolia variant built from the same template (→ approve via
+RPC host, with no id present). 17/17 green under `pnpm run test:unit`.
+
+### Expected effect on the matrix — for the next real run to confirm
+
+With Fuji correctly declined and Base Sepolia approved by RPC, the MetaMask
+column should now do what Rabby's already does: decline Aave's Fuji switch, add
+Base Sepolia itself, and land there. If a real `pnpm test` shows both columns
+declining Fuji symmetrically and both ending on Base Sepolia, `Aave/*/connect`
+comes off `blocked` and can finally carry a verdict. Matrix would move from
+**6 measured · 2 blocked · 8 pending** toward closing the two connect cells.
+
+NOTE this is a HYPOTHESIS about the verdict until a wallet run confirms it — the
+policy logic is proven in isolation (unit tests), the end-to-end behaviour is
+not yet re-measured. `pnpm run typecheck` clean is the gate before that run.

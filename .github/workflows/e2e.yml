@@ -13,7 +13,30 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
+  # Pure, browser-free regression gate for the chain-approval policy — the one
+  # module a wrong verdict silently rides on. Runs in seconds, needs no wallet
+  # and no secrets, and blocks the 90-minute wallet job below when it's red
+  # (see `needs: unit`). This exists because run #19 shipped an INERT guard that
+  # a green suite hid for eight days; a millisecond unit test now catches that
+  # class of regression before CI spends a single wallet minute.
+  unit:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 10
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: pnpm
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+      - name: Unit tests (chain policy)
+        run: pnpm run test:unit
+
   e2e:
+    needs: unit
     runs-on: ubuntu-latest
     # The full suite drives a real wallet against a live protocol: MetaMask's
     # popup needs ~30s to boot for EACH interaction, and a single supply is two

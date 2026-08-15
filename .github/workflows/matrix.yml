@@ -60,6 +60,12 @@ jobs:
       - name: Install dependencies
         run: pnpm install --frozen-lockfile
 
+      # Fail in seconds if the chain-approval policy is broken, before spending
+      # ~40 minutes booting two wallets. The matrix is precisely what an inert
+      # guard corrupts (run #19), so gate it on the pure policy tests.
+      - name: Unit tests (chain policy)
+        run: pnpm run test:unit
+
       - name: Cache MetaMask build
         uses: actions/cache@v4
         with:

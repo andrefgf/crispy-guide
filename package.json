@@ -31,6 +31,7 @@
     "build:cache:headless": "pnpm run fetch:metamask && cross-env HEADLESS=true tsx scripts/build-cache.ts",
     "test": "cross-env HEADLESS=true playwright test",
     "test:smoke": "cross-env HEADLESS=true playwright test tests/connection.spec.ts",
+    "test:unit": "tsx unit/chain-policy.test.ts",
     "test:demo": "cross-env HEADLESS=true RECORD_VIDEO=1 playwright test",
     "preflight": "tsx scripts/check-balance.ts --check",
     "test:headed": "playwright test --headed",
@@ -41,7 +42,8 @@
     "probe:rabby:event": "tsx scripts/probe-rabby-connect-event.ts",
     "fetch:phantom": "node scripts/fetch-phantom.mjs",
     "probe:phantom": "pnpm run fetch:phantom && tsx scripts/probe-phantom.ts",
-    "probe:identity": "tsx scripts/probe-provider-identity.ts"
+    "probe:identity": "tsx scripts/probe-provider-identity.ts",
+    "probe:mm:chain": "cross-env HEADLESS=true tsx scripts/probe-metamask-chain-dialog.ts"
   },
   "keywords": [
     "e2e",

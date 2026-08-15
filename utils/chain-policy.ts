@@ -58,6 +58,35 @@ import { BASE_SEPOLIA } from './networks'
 /** The chain every cell is measured against. Single-chain suite, for now. */
 export const TARGET_CHAIN_ID = BASE_SEPOLIA.chainId
 
+/**
+ * How to recognise the target chain when a wallet DOESN'T print its id.
+ *
+ * MetaMask 13.39.1's add-network dialog shows the network name and RPC endpoint
+ * but NOT the chain id (captured 2026-08-15, `probe:mm:chain`). Rabby prints the
+ * id. So id-only matching would recognise Base Sepolia in Rabby and silently
+ * fail to in MetaMask — declining the very network it is meant to approve.
+ *
+ * The RPC host is the field BOTH wallets always render, and it is the endpoint a
+ * transaction is actually sent to: the strongest identity a dialog can carry. An
+ * add/switch to the real Base Sepolia RPC IS Base Sepolia, whatever the screen
+ * is captioned. The network NAME is deliberately excluded — it is the one field
+ * a hostile dApp could set to anything, so it must not be a positive signal.
+ *
+ * Derived from BASE_SEPOLIA so an env RPC override updates it too — the dialog
+ * for our own add-chain request echoes the same URL, so the two stay in step.
+ */
+export const TARGET_FINGERPRINT: { rpcHosts: string[] } = {
+  rpcHosts: BASE_SEPOLIA.rpcUrls
+    .map((u) => {
+      try {
+        return new URL(u).host
+      } catch {
+        return ''
+      }
+    })
+    .filter((h) => h.length > 0),
+}
+
 export interface ChainDialogReading {
   /** Did the dialog render anything at all? */
   painted: boolean
@@ -76,6 +105,37 @@ export type ChainDecision = 'approve' | 'decline' | 'not-a-chain-dialog'
 export interface ChainVerdict {
   decision: ChainDecision
   reason: string
+}
+
+/**
+ * Does this screen's text offer to add or switch a network?
+ *
+ * Pure and exported ON PURPOSE. This detector is the exact thing that was inert
+ * on the MetaMask column for eight days (run #19): it matched Rabby's
+ * "Add Custom Network to Rabby" and did NOT match whatever MetaMask 13.39.1
+ * renders, so MetaMask classified every network prompt `not-a-chain-dialog` and
+ * fell through to approve Aave's Avalanche Fuji switch. A detector that decides
+ * verdicts must be testable without a browser, against real captured wording —
+ * so it lives here as a function, and `unit/chain-policy.test.ts` pins it.
+ *
+ * Detect on the ACTION (add/switch intent), not on the phrase "chain id": this
+ * runs on every confirm screen, transactions included, and a transaction can
+ * legitimately show a chain id. Requiring add/switch-network intent keeps a
+ * supply or borrow whose chain happens not to match from being silently
+ * declined far from its cause.
+ *
+ * The wallet clauses are each VERIFIED against a captured dialog, not guessed:
+ *   - Rabby:    "Add Custom Network to Rabby"        (matrix-out-ci run log)
+ *   - MetaMask: "…suggesting additional network details."  (probe:mm:chain,
+ *               13.39.1, 2026-08-15)
+ * Do not add a wallet clause from a minified bundle — run `probe:mm:chain`, read
+ * the captured `haystack`, add the exact phrase, and pin it with a unit test.
+ * Guessing a selector is what cost a day on the 13.13.1 -> 13.39.1 testid rename.
+ */
+export function looksLikeChainDialog(text: string): boolean {
+  return /(add|switch)\s+(a\s+)?(custom\s+)?network|custom network|add ethereum chain|additional network details|allow this site to (add|switch)/i.test(
+    text,
+  )
 }
 
 /**
@@ -133,20 +193,11 @@ export async function readChainDialog(
 
   return {
     painted: true,
-    // Detect on the ACTION, not on the phrase "chain id".
-    //
-    // This guard now runs on every confirm screen, including transactions. A
-    // transaction confirmation can legitimately display a chain id in its
-    // details — and if that alone marked it a "chain dialog", a supply or borrow
-    // whose chain happened not to match would be silently DECLINED and the
-    // lending tests would fail somewhere far from the cause.
-    //
-    // So require add/switch-network intent. "Chain id" still supplies the number
-    // once we know it is a network prompt; it no longer decides that it is one.
-    isChainDialog:
-      /(add|switch)\s+(a\s+)?(custom\s+)?network|custom network|add ethereum chain|allow this site to (add|switch)/i.test(
-        text,
-      ),
+    // Detect on the ACTION (add/switch intent), not the phrase "chain id".
+    // Extracted to looksLikeChainDialog() so it is unit-testable against
+    // captured wording — see that function for the full reasoning and the
+    // still-unverified MetaMask branch.
+    isChainDialog: looksLikeChainDialog(text),
     haystack,
     inputs,
     sawChainId: haystack.match(/\b\d{3,7}\b/)?.[0] ?? null,
@@ -162,6 +213,7 @@ export async function readChainDialog(
 export function decideChainDialog(
   reading: ChainDialogReading,
   expectedChainIdDec: number = TARGET_CHAIN_ID,
+  fingerprint: { rpcHosts?: string[] } = TARGET_FINGERPRINT,
 ): ChainVerdict {
   if (!reading.painted) {
     return {
@@ -174,16 +226,36 @@ export function decideChainDialog(
     return { decision: 'not-a-chain-dialog', reason: 'no network add/switch on this screen' }
   }
 
-  const wanted = String(expectedChainIdDec)
-  // Bounded match: `4351` must not satisfy a request for `43`, and `84532` must
-  // not be found inside `845321`.
-  const matches = new RegExp(`(^|[^0-9])${wanted}([^0-9]|$)`).test(reading.haystack)
+  const wantedDec = String(expectedChainIdDec)
+  const wantedHex = '0x' + expectedChainIdDec.toString(16)
+
+  // Match the target chain id in EITHER textual form — 84532 and 0x14a34 are the
+  // same chain; which one a wallet prints is a rendering choice. Rabby prints
+  // decimal (proven: inputs=["43113",...]). Bounded so `4351` can't satisfy `43`,
+  // `84532` isn't found inside `845321`, `0x14a34` isn't found inside `0x14a340`.
+  const decMatch = new RegExp(`(^|[^0-9])${wantedDec}([^0-9]|$)`).test(reading.haystack)
+  const hexMatch = new RegExp(`(^|[^0-9a-fx])${wantedHex}([^0-9a-f]|$)`, 'i').test(reading.haystack)
+
+  // …but MetaMask 13.39.1 prints NO chain id at all: its add-network dialog shows
+  // only the name and RPC (captured 2026-08-15 — sawChainId=null, inputs=[]).
+  // That is what `sawChainId=2026`, a *year*, was really telling us in run #19 —
+  // there was no chain id on the screen to read. Id-only matching would DECLINE
+  // Base Sepolia the instant MetaMask is the wallet offering it. So also accept
+  // the target's RPC host (see TARGET_FINGERPRINT: the endpoint is the identity
+  // to trust; the name is not). Substring, lower-cased, because the dialog shows
+  // the host with a path and no scheme ("base-sepolia-rpc.publicnode.com/…").
+  const haystackLc = reading.haystack.toLowerCase()
+  const rpcMatch = (fingerprint.rpcHosts ?? []).some(
+    (h) => h.length > 0 && haystackLc.includes(h.toLowerCase()),
+  )
+
+  const matches = decMatch || hexMatch || rpcMatch
 
   return matches
-    ? { decision: 'approve', reason: `chain ${wanted} offered` }
+    ? { decision: 'approve', reason: `target chain offered (${wantedDec}/${wantedHex} or its RPC)` }
     : {
         decision: 'decline',
-        reason: `wrong chain (saw ${reading.sawChainId ?? '?'}, want ${wanted})`,
+        reason: `wrong chain (saw ${reading.sawChainId ?? '?'}, want ${wantedDec}/${wantedHex} or its RPC)`,
       }
 }
 
