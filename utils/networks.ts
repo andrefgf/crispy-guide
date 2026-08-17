@@ -18,13 +18,64 @@ export const BASE_SEPOLIA = {
   blockExplorerUrls: ['https://sepolia.basescan.org'],
 } as const
 
-/** Params shape accepted by `wallet_addEthereumChain`. */
-export function addChainParams() {
-  const { chainIdHex, chainName, nativeCurrency, rpcUrls, blockExplorerUrls } = BASE_SEPOLIA
+/**
+ * Ethereum Sepolia — the SECOND chain, added 2026-08-16.
+ *
+ * Why a second chain at all: every verdict so far was measured on one chain
+ * through one dApp, so "the wallet does X" and "Aave's config does X" were not
+ * separable (see docs/findings/aave-base-sepolia-wagmi-fuji.md). A second chain
+ * is the axis that tells wallet behaviour apart from one chain's quirks — and
+ * coverage across chains is exactly what the WalletConnect QA feedback named as
+ * the thing worth having.
+ *
+ * Sepolia specifically: it is the testnet wallets are most likely to ship
+ * built-in, so `wallet_switchEthereumChain` should succeed WITHOUT an add — which
+ * makes it the natural control against Base Sepolia, where MetaMask must add the
+ * network first. Those are two genuinely different wallet code paths, and the
+ * difference between them is a measurement, not a nuisance.
+ *
+ * No funds needed: connect and personal_sign are free. Nothing here spends gas.
+ */
+export const ETHEREUM_SEPOLIA = {
+  chainIdHex: '0xaa36a7', // 11155111
+  chainId: 11155111,
+  chainName: 'Ethereum Sepolia',
+  nativeCurrency: { name: 'Ether', symbol: 'ETH', decimals: 18 },
+  rpcUrls: [process.env.ETHEREUM_SEPOLIA_RPC_URL ?? 'https://ethereum-sepolia-rpc.publicnode.com'],
+  blockExplorerUrls: ['https://sepolia.etherscan.io'],
+} as const
+
+/** The shape every chain in the registry satisfies. */
+export type Chain = {
+  readonly chainIdHex: string
+  readonly chainId: number
+  readonly chainName: string
+  readonly nativeCurrency: { readonly name: string; readonly symbol: string; readonly decimals: number }
+  readonly rpcUrls: readonly string[]
+  readonly blockExplorerUrls: readonly string[]
+}
+
+/**
+ * Every chain a cell may be measured against, keyed by the slug that appears in
+ * MATRIX verdict lines (`chain=base-sepolia`). Adding a chain to the grid should
+ * be an entry here plus a spec parameter — never a new integration.
+ */
+export const CHAINS: Record<string, Chain> = {
+  'base-sepolia': BASE_SEPOLIA,
+  'ethereum-sepolia': ETHEREUM_SEPOLIA,
+}
+
+/**
+ * Params shape accepted by `wallet_addEthereumChain`.
+ *
+ * Defaults to Base Sepolia so every existing caller is unchanged.
+ */
+export function addChainParams(chain: Chain = BASE_SEPOLIA) {
+  const { chainIdHex, chainName, nativeCurrency, rpcUrls, blockExplorerUrls } = chain
   return {
     chainId: chainIdHex,
     chainName,
-    nativeCurrency,
+    nativeCurrency: { ...nativeCurrency },
     rpcUrls: [...rpcUrls],
     blockExplorerUrls: [...blockExplorerUrls],
   }

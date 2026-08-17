@@ -1777,3 +1777,51 @@ comes off `blocked` and can finally carry a verdict. Matrix would move from
 NOTE this is a HYPOTHESIS about the verdict until a wallet run confirms it — the
 policy logic is proven in isolation (unit tests), the end-to-end behaviour is
 not yet re-measured. `pnpm run typecheck` clean is the gate before that run.
+
+## 2026-08-15 (run #20 aftermath) — the guard fix landed, and it banked a finding
+
+Matrix run #20 (`c84044b`, workflow_dispatch on `mm-guard-fix`): unit gate green in
+0s, then the real result. MetaMask now declines Aave's Fuji switch and reaches
+Base Sepolia — proven, because the cell got past `ensureNetwork` (which throws off
+the target) to `expectConnected`. And it then fails **exactly like Rabby**:
+
+    Aave/MetaMask/connect  = WALLET AUTHORISED BUT DAPP SHOWS NO ACCOUNT,
+                             chainId=0x14a34 (expected), chipVisible=false
+    Aave/Rabby/connect     = (same, unchanged)
+
+The old MetaMask `connect = pass` was the wallet sitting on Fuji. With the guard
+fixed it sits on Base Sepolia, and on Base Sepolia Aave shows no chip — the same
+wall Rabby has hit since CI #14. Two wallets, one identical result, one shared
+cause. The per-wallet artifact is gone; the columns finally measure the same thing.
+
+### The chip absence is a dApp finding, not our bug — and now it's written up
+
+Runs 5 & 6 already proved the mechanism: decline Aave's Fuji switch and wagmi
+destroys the connection (`connections:[]`). Run #20 confirms it cross-wallet.
+Documented as a standalone, shareable finding:
+**`docs/findings/aave-base-sepolia-wagmi-fuji.md`**. Root cause (Aave's wagmi
+listing Fuji as default) is stated as a hypothesis pending a read of
+`aave/interface`'s config — nothing filed upstream yet.
+
+### MetaMask cells now measure like Rabby (spec change)
+
+`aave.metamask.spec.ts` was recording `blocked` on connect/sign/reconnect because
+`expectConnected` **threw** when the chip was absent — hiding the finding behind a
+harness complaint, the exact anti-pattern the Rabby column already corrected. Now:
+
+- **connect** measures the provider first (`authorisedAccount` + `currentChainId`),
+  waits for the chip without throwing, and records the honest
+  `fail — WALLET AUTHORISED BUT DAPP SHOWS NO ACCOUNT`.
+- **sign / reconnect** wait for the chip with `.catch(() => {})` instead of
+  `expectConnected` — the provider, not the dApp UI, is the precondition. Sign
+  should now measure `pass` (personal_sign works at the provider level even with
+  the connection torn down), matching Rabby.
+
+Verdict model unchanged: a `fail` is a measured finding and stays green; only a
+genuine can't-measure throws `blocked`. Also folded `unit/**` into the tsconfig
+`include` so the pure chain-policy tests are type-checked in CI, not just run.
+
+**Next real run should read:** both connect cells `fail` with the identical
+"authorised but no account" note, MetaMask `sign = pass`. That is the matrix
+finally recording a symmetric, honest verdict for `Aave/*/connect` instead of
+`blocked` — the cell carries a result, and the result is a dApp finding.

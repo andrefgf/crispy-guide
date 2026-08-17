@@ -3,8 +3,9 @@ import {
   readChainDialog,
   decideChainDialog,
   logChainVerdict,
-  TARGET_CHAIN_ID,
+  fingerprintFor,
 } from './chain-policy'
+import { BASE_SEPOLIA, type Chain } from './networks'
 import fs from 'node:fs'
 
 /**
@@ -367,7 +368,15 @@ async function resolveRequest(
   extensionId: string,
   kind: 'confirm' | 'cancel',
   timeoutMs?: number,
-  expectedChainIdDec: number = TARGET_CHAIN_ID,
+  // The CHAIN under test, not just its id.
+  //
+  // Was `expectedChainIdDec: number`, which silently hard-coded the guard to Base
+  // Sepolia's id AND (via decideChainDialog's default) to Base Sepolia's RPC
+  // fingerprint. The moment a cell runs on a second chain, that guard declines
+  // the CORRECT network — the same class of silent, verdict-changing bug the
+  // inert detector was. Taking the whole chain keeps the id and the fingerprint
+  // from ever disagreeing.
+  expectedChain: Chain = BASE_SEPOLIA,
 ): Promise<void> {
   const page = await getNotificationPage(context, extensionId, timeoutMs)
   const button = actionButton(page, kind)
@@ -440,7 +449,7 @@ async function resolveRequest(
     // anomalous rather than merely early, and declining it is safe.
     if (kind === 'confirm') {
       const reading = await readChainDialog(page, 6000)
-      const verdict = decideChainDialog(reading, expectedChainIdDec)
+      const verdict = decideChainDialog(reading, expectedChain.chainId, fingerprintFor(expectedChain))
       logChainVerdict('metamask', verdict, reading)
 
       if (verdict.decision === 'decline') {
@@ -568,6 +577,8 @@ export async function approveFollowUpRequests(
   extensionId: string,
   max = 3,
   firstTimeoutMs = 20_000,
+  /** Chain these prompts are expected to offer. Defaults to Base Sepolia. */
+  expectedChain: Chain = BASE_SEPOLIA,
 ): Promise<number> {
   let approved = 0
 
@@ -586,7 +597,7 @@ export async function approveFollowUpRequests(
       // an action with no follow-up doesn't burn dead time (which is what pushed
       // the lending tests over their timeout in the first place).
       const budget = i === 0 ? firstTimeoutMs : 20_000
-      await resolveRequest(context, extensionId, 'confirm', budget)
+      await resolveRequest(context, extensionId, 'confirm', budget, expectedChain)
       approved++
     } catch {
       break // nothing left pending
@@ -610,6 +621,22 @@ export async function rejectSwitchNetwork(
  * Used to assert the negative: a blocked action must never reach the wallet.
  * Checking `context.pages()` alone would be a false negative in headless (where
  * no popup window is ever created), so we also look at `notification.html`.
+ */
+/**
+ * ⚠ DESTRUCTIVE WHEN IT MATTERS — do not use this to poll for a live request.
+ *
+ * It opens `notification.html` and CLOSES it in the `finally`. Closing MetaMask's
+ * notification window is how a user **rejects** (see getNotificationPage, which
+ * is careful never to do it while a request is showing). So calling this while a
+ * connect or signature request is pending can CANCEL that request — the probe
+ * destroys what it is measuring, and the symptom is a dApp that never receives
+ * an account for reasons nothing in the log explains.
+ *
+ * Cost André a run on 2026-08-16, used exactly this way in the test-dApp spec.
+ *
+ * To answer a prompt that may or may not exist, call `approveFollowUpRequests`
+ * with a short budget instead: it never closes a page that is showing a request,
+ * and doing nothing is harmless when no prompt is pending.
  */
 export async function hasPendingRequest(
   context: BrowserContext,

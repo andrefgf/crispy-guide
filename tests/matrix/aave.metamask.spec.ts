@@ -3,9 +3,9 @@ import { connect } from '../../utils/selectors'
 import {
   capture,
   connectWallet,
-  expectConnected,
   dismissAnalyticsPrompt,
 } from '../../utils/helpers'
+import { BASE_SEPOLIA } from '../../utils/networks'
 import * as mm from '../../utils/metamask-actions'
 import { recoverMessageAddress, stringToHex } from 'viem'
 import type { Page } from '@playwright/test'
@@ -66,6 +66,17 @@ async function authorisedAccount(page: Page): Promise<string | null> {
     .catch(() => null)
 }
 
+/** Chain id the injected provider reports (hex), e.g. 0x14a34 for Base Sepolia. */
+async function currentChainId(page: Page): Promise<string | null> {
+  return page
+    .evaluate(async () => {
+      const eth = (window as unknown as { ethereum?: { request(a: unknown): Promise<string> } }).ethereum
+      if (!eth) return null
+      return await eth.request({ method: 'eth_chainId' })
+    })
+    .catch(() => null)
+}
+
 /** Does the dApp's truncated chip (e.g. 0xf3…2266, head length varies) refer to `account`? */
 function chipMatches(chipText: string, account: string): boolean {
   const acc = account.toLowerCase().replace(/^0x/, '')
@@ -93,19 +104,53 @@ test.describe('Matrix — Aave × MetaMask', () => {
   test('connect', async ({ page, context, extensionId }) => {
     await runCell('connect', async () => {
       await connectWallet(page, context, extensionId)
-      await expectConnected(page)
 
+      // MEASURE THE PROVIDER FIRST, then the dApp — and DON'T throw on a missing
+      // chip. Run #20 (see STATUS.md) established, on BOTH wallet columns, that
+      // when the shared chain policy correctly declines Aave's mid-connect switch
+      // to Avalanche Fuji, Aave's wagmi tears the connection down (connections:[])
+      // and no account chip ever renders. A correctly-connected wallet with no
+      // chip is a real, measured divergence between wallet and dApp — `fail`, not
+      // `blocked`. `expectConnected` used to throw here, so this cell recorded
+      // `blocked` and hid the finding behind a harness complaint — the exact
+      // anti-pattern the Rabby column already corrected.
       const account = await authorisedAccount(page)
-      const chip = await connect.accountChip(page).innerText().catch(() => '')
-      const ok = !!account && chipMatches(chip, account)
-      verdict('connect', ok ? 'pass' : 'fail', `chip="${chip}", account=${account}, chain=${CHAIN}`)
+      const chainId = await currentChainId(page)
+
+      const chipAppeared = await connect
+        .accountChip(page)
+        .waitFor({ state: 'visible', timeout: 30_000 })
+        .then(() => true)
+        .catch(() => false)
+      const chip = chipAppeared ? await connect.accountChip(page).innerText().catch(() => '') : ''
+
+      await capture(page, 'metamask connect — final dApp state')
+
+      if (!account) {
+        // The wallet itself never authorised an account — we cannot measure the
+        // wallet-vs-dApp divergence, so this is a genuine block, not a fail.
+        throw new Error(`connect: provider reports no authorised account (chain=${chainId})`)
+      }
+
+      const ok = chipAppeared && chipMatches(chip, account)
+      verdict(
+        'connect',
+        ok ? 'pass' : 'fail',
+        ok
+          ? `chip="${chip}", account=${account}, chain=${CHAIN}`
+          : `WALLET AUTHORISED BUT DAPP SHOWS NO ACCOUNT — account=${account}, ` +
+            `chainId=${chainId} (expected ${BASE_SEPOLIA.chainIdHex}), chipVisible=${chipAppeared}, chain=${CHAIN}`,
+      )
     })
   })
 
   test('sign', async ({ page, context, extensionId }) => {
     await runCell('sign', async () => {
       await connectWallet(page, context, extensionId)
-      await expectConnected(page)
+      // Chip is not a precondition for signing — the provider is. Don't block a
+      // measurable cell on the dApp's UI (the connect cell explains why the chip
+      // is absent on Base Sepolia).
+      await connect.accountChip(page).waitFor({ state: 'visible', timeout: 15_000 }).catch(() => {})
 
       const account = await authorisedAccount(page)
       if (!account) throw new Error('sign: no authorised account after connect')
@@ -196,7 +241,7 @@ test.describe('Matrix — Aave × MetaMask', () => {
   test('reconnect', async ({ page, context, extensionId }) => {
     await runCell('reconnect', async () => {
       await connectWallet(page, context, extensionId)
-      await expectConnected(page)
+      await connect.accountChip(page).waitFor({ state: 'visible', timeout: 15_000 }).catch(() => {})
       const before = await authorisedAccount(page)
 
       await page.reload({ waitUntil: 'domcontentloaded' })

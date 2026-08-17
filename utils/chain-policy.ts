@@ -75,17 +75,22 @@ export const TARGET_CHAIN_ID = BASE_SEPOLIA.chainId
  * Derived from BASE_SEPOLIA so an env RPC override updates it too — the dialog
  * for our own add-chain request echoes the same URL, so the two stay in step.
  */
-export const TARGET_FINGERPRINT: { rpcHosts: string[] } = {
-  rpcHosts: BASE_SEPOLIA.rpcUrls
-    .map((u) => {
-      try {
-        return new URL(u).host
-      } catch {
-        return ''
-      }
-    })
-    .filter((h) => h.length > 0),
+export function fingerprintFor(chain: { rpcUrls: readonly string[] }): { rpcHosts: string[] } {
+  return {
+    rpcHosts: chain.rpcUrls
+      .map((u) => {
+        try {
+          return new URL(u).host
+        } catch {
+          return ''
+        }
+      })
+      .filter((h) => h.length > 0),
+  }
 }
+
+/** Fingerprint of the default target chain. */
+export const TARGET_FINGERPRINT: { rpcHosts: string[] } = fingerprintFor(BASE_SEPOLIA)
 
 export interface ChainDialogReading {
   /** Did the dialog render anything at all? */

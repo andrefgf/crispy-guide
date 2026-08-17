@@ -32,6 +32,7 @@
     "test": "cross-env HEADLESS=true playwright test",
     "test:smoke": "cross-env HEADLESS=true playwright test tests/connection.spec.ts",
     "test:unit": "tsx unit/chain-policy.test.ts",
+    "test:dapp": "cross-env HEADLESS=true playwright test tests/matrix/testdapp.metamask.spec.ts",
     "test:demo": "cross-env HEADLESS=true RECORD_VIDEO=1 playwright test",
     "preflight": "tsx scripts/check-balance.ts --check",
     "test:headed": "playwright test --headed",

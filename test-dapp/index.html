@@ -1,0 +1,271 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Prumada wallet test dApp</title>
+<!--
+  A DELIBERATELY BORING dApp.
+
+  WHY THIS EXISTS
+  Every wallet-layer verdict so far was measured through app.aave.com, and the
+  Aave investigation (docs/findings/aave-base-sepolia-wagmi-fuji.md) showed how
+  much of what we hit was ONE dApp's wagmi configuration rather than anything
+  about the wallet: Aave asks for Avalanche Fuji on its Base Sepolia market, and
+  a wallet that correctly declines gets its connection destroyed. Weeks went into
+  telling those two apart.
+
+  So this page exists to answer a different question — "how does THIS WALLET
+  behave on THIS CHAIN?" — with no framework in the way. It is the control:
+  no wagmi, no connector abstraction, no router, no build step, no dependencies.
+  Raw EIP-6963 discovery and raw EIP-1193 calls, and nothing else. When a cell
+  fails here, the wallet did it.
+
+  WHAT IT IS NOT
+  Not a replacement for testing real dApps — those produce the findings worth
+  publishing. This is the axis that makes wallets × chains cheap to cover:
+  adding a chain is a query parameter, not a new integration.
+
+  CONTRACT WITH THE HARNESS
+  Every element the tests touch carries a `data-testid`. Results are also mirrored
+  into `window.__dapp` so a spec can read state without scraping the DOM — the
+  same discipline as the matrix specs: read the provider, not the pixels.
+
+  Served by utils/test-dapp.ts via route fulfilment — no server process, no port.
+-->
+<style>
+  :root { color-scheme: light dark; }
+  body { font: 14px/1.5 ui-monospace, SFMono-Regular, Menlo, monospace; margin: 0; padding: 24px; }
+  h1 { font-size: 16px; margin: 0 0 4px; }
+  .sub { opacity: .7; margin: 0 0 20px; }
+  .row { margin: 8px 0; }
+  button { font: inherit; padding: 8px 14px; margin: 0 6px 6px 0; cursor: pointer; }
+  button:disabled { opacity: .5; cursor: not-allowed; }
+  table { border-collapse: collapse; margin: 16px 0; }
+  td { padding: 4px 14px 4px 0; vertical-align: top; }
+  td:first-child { opacity: .7; }
+  .val { font-weight: 600; word-break: break-all; }
+  #error { color: #c00; white-space: pre-wrap; word-break: break-all; }
+  #log { border-top: 1px solid rgba(128,128,128,.4); margin-top: 20px; padding-top: 12px;
+         white-space: pre-wrap; word-break: break-all; max-height: 40vh; overflow: auto; opacity: .85; }
+</style>
+</head>
+<body>
+
+<h1>Prumada wallet test dApp</h1>
+<p class="sub">No framework. Raw EIP-6963 + EIP-1193. If something breaks here, it is the wallet.</p>
+
+<div class="row">
+  <button data-testid="discover">Discover wallets</button>
+  <button data-testid="connect">Connect</button>
+  <button data-testid="sign">Sign message</button>
+  <button data-testid="switch-chain">Switch chain</button>
+  <button data-testid="add-chain">Add chain</button>
+</div>
+
+<table>
+  <tr><td>target rdns</td><td class="val" data-testid="target-rdns">—</td></tr>
+  <tr><td>target chain</td><td class="val" data-testid="target-chain">—</td></tr>
+  <tr><td>discovered</td><td class="val" data-testid="providers">—</td></tr>
+  <tr><td>account</td><td class="val" data-testid="account">—</td></tr>
+  <tr><td>chainId</td><td class="val" data-testid="chain-id">—</td></tr>
+  <tr><td>signature</td><td class="val" data-testid="signature">—</td></tr>
+  <tr><td>error</td><td class="val" id="error" data-testid="error">—</td></tr>
+</table>
+
+<div id="log" data-testid="log"></div>
+
+<script>
+(function () {
+  'use strict'
+
+  // ---- config from the query string -------------------------------------
+  // ?rdns=io.metamask&chainId=0xaa36a7&chainName=Ethereum+Sepolia&rpc=...&symbol=ETH
+  var q = new URLSearchParams(location.search)
+  var TARGET_RDNS = q.get('rdns') || 'io.metamask'
+  var TARGET_CHAIN = {
+    chainId: q.get('chainId') || '',
+    chainName: q.get('chainName') || '',
+    rpcUrls: q.get('rpc') ? [q.get('rpc')] : [],
+    nativeCurrency: {
+      name: q.get('symbol') || 'ETH',
+      symbol: q.get('symbol') || 'ETH',
+      decimals: 18
+    },
+    blockExplorerUrls: q.get('explorer') ? [q.get('explorer')] : []
+  }
+
+  // ---- state, mirrored to window.__dapp for the harness ------------------
+  var providers = []          // [{ rdns, name, provider }]
+  var state = {
+    account: null,
+    chainId: null,
+    signature: null,
+    error: null,
+    providers: [],            // rdns strings only — serialisable
+    events: []                // provider events, in order, with timestamps
+  }
+  var t0 = Date.now()
+  window.__dapp = state
+
+  function $(id) { return document.querySelector('[data-testid="' + id + '"]') }
+  function set(id, v) { $(id).textContent = (v === null || v === undefined || v === '') ? '—' : String(v) }
+
+  function log(msg) {
+    var line = '+' + String(Date.now() - t0).padStart(6) + 'ms  ' + msg
+    $('log').textContent += line + '\n'
+  }
+
+  function render() {
+    set('target-rdns', TARGET_RDNS)
+    set('target-chain', TARGET_CHAIN.chainId
+      ? TARGET_CHAIN.chainId + (TARGET_CHAIN.chainName ? ' (' + TARGET_CHAIN.chainName + ')' : '')
+      : '—')
+    set('providers', state.providers.join(', '))
+    set('account', state.account)
+    set('chain-id', state.chainId)
+    set('signature', state.signature)
+    set('error', state.error)
+  }
+
+  function fail(where, e) {
+    // Record the FULL error shape. EIP-1193 codes are the whole point of a wallet
+    // test — 4001 (user rejected) and 4902 (unrecognised chain) mean different
+    // things and a harness that only sees a message string cannot tell them apart.
+    var code = (e && e.code !== undefined) ? e.code : null
+    var msg = (e && e.message) ? e.message : String(e)
+    state.error = (code !== null ? '[' + code + '] ' : '') + msg
+    state.lastErrorCode = code
+    log('ERROR ' + where + ': ' + state.error)
+    render()
+  }
+
+  // ---- EIP-6963 discovery ------------------------------------------------
+  // Listener registered at document start, BEFORE requesting — announcements are
+  // fire-and-forget and a listener attached afterwards simply misses them.
+  window.addEventListener('eip6963:announceProvider', function (event) {
+    var d = event.detail || {}
+    if (!d.provider || !d.info) return
+    if (providers.some(function (p) { return p.rdns === d.info.rdns })) return
+    providers.push({ rdns: d.info.rdns, name: d.info.name, provider: d.provider })
+    state.providers = providers.map(function (p) { return p.rdns })
+    log('announced: ' + d.info.rdns + ' (' + d.info.name + ')')
+    wire(d.info.rdns, d.provider)
+    render()
+  })
+
+  function discover() {
+    window.dispatchEvent(new Event('eip6963:requestProvider'))
+    log('requested providers')
+  }
+
+  // Resolve the wallet under test BY RDNS. Never window.ethereum: the legacy slot
+  // belongs to whichever extension won the injection race, and three vendors have
+  // been observed claiming isMetaMask on it.
+  function target() {
+    var hit = providers.filter(function (p) { return p.rdns === TARGET_RDNS })[0]
+    if (!hit) throw new Error('provider ' + TARGET_RDNS + ' not announced (have: ' + (state.providers.join(', ') || 'none') + ')')
+    return hit.provider
+  }
+
+  // Record provider events so a spec can assert on them rather than on the DOM.
+  function wire(rdns, p) {
+    if (!p || typeof p.on !== 'function' || p.__wired) return
+    p.__wired = true
+    ;['accountsChanged', 'chainChanged', 'connect', 'disconnect'].forEach(function (name) {
+      p.on(name, function (payload) {
+        state.events.push({ ms: Date.now() - t0, rdns: rdns, event: name, payload: payload })
+        log('event ' + name + ' ' + JSON.stringify(payload))
+        if (name === 'accountsChanged') state.account = (payload && payload[0]) || null
+        if (name === 'chainChanged') state.chainId = payload
+        render()
+      })
+    })
+  }
+
+  // ---- actions -----------------------------------------------------------
+  async function refresh() {
+    var p = target()
+    state.account = (await p.request({ method: 'eth_accounts' }))[0] || null
+    state.chainId = await p.request({ method: 'eth_chainId' })
+    render()
+  }
+
+  async function connect() {
+    state.error = null
+    state.lastErrorCode = null   // clear per action, or a stale code reads as fresh
+    try {
+      var p = target()
+      log('eth_requestAccounts →')
+      var accounts = await p.request({ method: 'eth_requestAccounts' })
+      state.account = accounts[0] || null
+      state.chainId = await p.request({ method: 'eth_chainId' })
+      log('connected ' + state.account + ' on ' + state.chainId)
+      render()
+    } catch (e) { fail('connect', e) }
+  }
+
+  async function sign() {
+    state.error = null
+    state.lastErrorCode = null   // clear per action, or a stale code reads as fresh
+    state.signature = null
+    try {
+      var p = target()
+      if (!state.account) await refresh()
+      if (!state.account) throw new Error('no account — connect first')
+      // Fresh message every click, carrying a timestamp nonce: a canned signature
+      // from a mocked provider recovers to the wrong address, so this cannot be faked.
+      var message = 'Prumada wallet test dApp — sign check @ ' + new Date().toISOString()
+      state.message = message
+      var hex = '0x' + Array.from(new TextEncoder().encode(message))
+        .map(function (b) { return b.toString(16).padStart(2, '0') }).join('')
+      state.messageHex = hex
+      log('personal_sign →')
+      state.signature = await p.request({ method: 'personal_sign', params: [hex, state.account] })
+      log('signed: ' + String(state.signature).slice(0, 24) + '…')
+      render()
+    } catch (e) { fail('sign', e) }
+  }
+
+  async function switchChain() {
+    state.error = null
+    state.lastErrorCode = null   // clear per action, or a stale code reads as fresh
+    try {
+      if (!TARGET_CHAIN.chainId) throw new Error('no target chain in the query string')
+      log('wallet_switchEthereumChain → ' + TARGET_CHAIN.chainId)
+      await target().request({
+        method: 'wallet_switchEthereumChain',
+        params: [{ chainId: TARGET_CHAIN.chainId }]
+      })
+      await refresh()
+    } catch (e) { fail('switchChain', e) }
+  }
+
+  async function addChain() {
+    state.error = null
+    state.lastErrorCode = null   // clear per action, or a stale code reads as fresh
+    try {
+      if (!TARGET_CHAIN.chainId) throw new Error('no target chain in the query string')
+      log('wallet_addEthereumChain → ' + TARGET_CHAIN.chainId)
+      await target().request({ method: 'wallet_addEthereumChain', params: [TARGET_CHAIN] })
+      await refresh()
+    } catch (e) { fail('addChain', e) }
+  }
+
+  $('discover').addEventListener('click', discover)
+  $('connect').addEventListener('click', connect)
+  $('sign').addEventListener('click', sign)
+  $('switch-chain').addEventListener('click', switchChain)
+  $('add-chain').addEventListener('click', addChain)
+
+  // Expose for specs that would rather call than click.
+  window.__dappActions = { discover: discover, connect: connect, sign: sign,
+                           switchChain: switchChain, addChain: addChain, refresh: refresh }
+
+  render()
+  discover()   // announcements land within a tick; the button is for humans
+  log('ready — target ' + TARGET_RDNS)
+})()
+</script>
+</body>
+</html>

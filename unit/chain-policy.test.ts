@@ -24,10 +24,12 @@ import assert from 'node:assert/strict'
 import {
   looksLikeChainDialog,
   decideChainDialog,
+  fingerprintFor,
   TARGET_CHAIN_ID,
   TARGET_FINGERPRINT,
   type ChainDialogReading,
 } from '../utils/chain-policy'
+import { CHAINS } from '../utils/networks'
 
 // --- tiny runner (no dependency on a test framework) -----------------------
 let failures = 0
@@ -192,6 +194,37 @@ check('MetaMask Base Sepolia is APPROVED via RPC host, though it shows no id', (
 check('TARGET_FINGERPRINT carries at least one non-empty RPC host', () => {
   assert.ok(TARGET_FINGERPRINT.rpcHosts.length > 0)
   assert.ok(TARGET_FINGERPRINT.rpcHosts.every((h) => h.length > 0))
+})
+
+console.log('chain-policy — multi-chain (breadth)')
+
+check('fingerprintFor extracts hosts and drops malformed URLs', () => {
+  const fp = fingerprintFor({ rpcUrls: ['https://a.example.com/v1/key', 'not-a-url', ''] })
+  assert.deepEqual(fp.rpcHosts, ['a.example.com'])
+})
+
+check('every registered chain has a usable fingerprint', () => {
+  for (const [slug, chain] of Object.entries(CHAINS)) {
+    assert.ok(fingerprintFor(chain).rpcHosts.length > 0, `${slug} has no RPC host`)
+  }
+})
+
+check('registered chains have consistent hex/decimal ids', () => {
+  for (const [slug, chain] of Object.entries(CHAINS)) {
+    assert.equal(chain.chainIdHex, '0x' + chain.chainId.toString(16), `${slug} id mismatch`)
+  }
+})
+
+check('a chain dialog is judged against ITS OWN chain, not the default target', () => {
+  // The breadth trap: before the chain was threaded through, every dialog was
+  // measured against Base Sepolia — so the CORRECT Sepolia network would be
+  // declined the moment a cell ran on a second chain.
+  const sepolia = CHAINS['ethereum-sepolia']!
+  const r = reading({ haystack: `Add ${sepolia.chainName} | Chain ID ${sepolia.chainId}` })
+
+  assert.equal(decideChainDialog(r, sepolia.chainId, fingerprintFor(sepolia)).decision, 'approve')
+  // …and the same dialog is correctly refused when Base Sepolia is the target.
+  assert.equal(decideChainDialog(r).decision, 'decline')
 })
 
 console.log('')
