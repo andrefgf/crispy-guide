@@ -1,13 +1,15 @@
 # Aave Base Sepolia disconnects Rabby when it declines the Avalanche Fuji switch
 
-**Status:** Confirmed for **Rabby 0.93.100**, consistently, runs #14–#21.
-**NOT confirmed cross-wallet** — see the correction below. MetaMask's result is
-unstable across runs and passed cleanly in #21.
-**Do not send this to Aave, or cite it publicly, until the MetaMask column is
-explained.** An earlier revision of this file claimed cross-wallet confirmation
-on the strength of run #20 alone; run #21 contradicted it. Recorded here rather
-than quietly edited, because a retraction that leaves no trace is how the
-matrix's own credibility goes.
+**Status:** Confirmed for **Rabby 0.93.100** across runs #14–#22. The MetaMask
+column is **pending a clean re-run** (see below) — its apparent passes were a
+harness defect, now fixed, not a difference in the dApp.
+**Still do not send.** The claim is credible again but has not yet been measured
+with a working guard on both columns.
+
+*Revision history, kept deliberately: this file first claimed cross-wallet
+confirmation (run #20), withdrew it when run #21 disagreed, and run #22 then
+showed the disagreement was our own bug. A retraction that leaves no trace is
+how a matrix loses the right to be believed — so the wrong turns stay visible.*
 **Surface:** `app.aave.com` Base Sepolia market × EIP-1193 wallet connect.
 **Impact:** A wallet that stays on the market's own chain (Base Sepolia) cannot complete a connection — Aave shows no connected account.
 
@@ -105,15 +107,40 @@ It also explains the instability: MetaMask's *other* cells in the same run DO lo
 and refused, MetaMask should fail like Rabby. Whether that dialog appears is a
 timing race, which is exactly the coin-flip observed between runs #20 and #21.
 
-**Now instrumented, not yet confirmed.** `CHAIN_REQUEST_HOOK` recorded only the
-outgoing call; it now also records what came back — `outcome`, EIP-1193 `code`,
-and message — so the next run prints the answer beside the ask:
+### Run #22 — the hypothesis was WRONG, and the real answer is our own bug
+
+The outcome trace shipped, and it killed the 4001-vs-4902 story in one line. What
+MetaMask actually did in the passing cell:
 
 ```
-+20063ms wallet_switchEthereumChain chainId=0xa869 → REJECTED code=4902 "…"
+switch 0xa869        → REJECTED 4902   (chain unknown — expected)
+add    0xa869 (Fuji) → RESOLVED        ← the harness APPROVED it
+add    0x14a34       → resolved
 ```
 
-Confirm the codes, then this is fileable.
+MetaMask did not survive a rejection. **It never rejected.** Our own label
+fallback in `resolveRequest` confirmed Aave's Fuji add without the chain guard
+ever reading that screen — MetaMask's connect flow rolls connect → add-network
+into one multi-step page, the guard read the connect permission (correctly
+`not-a-chain-dialog`), and the fallback then clicked Confirm on the network
+screen behind it. The wallet went to Fuji, Aave rendered its chip, and the cell
+recorded `pass`. That is the 07-30 false pass rebuilt from different parts.
+
+So the original claim looks right after all, and the evidence now lines up:
+
+| | Fuji request | code seen | chip |
+|---|---|---|---|
+| Rabby (every run) | dialog shown, declined | **4001** | none |
+| MetaMask run #20 | declined | — | none (`blocked`) |
+| MetaMask runs #21–22 | **approved by our bug** | resolved | shows |
+
+Decline Fuji → no account, on both wallets. Approve it → chip. The dApp is
+consistent; our harness was not.
+
+**Fixed 17 Aug:** the read/decide/log triple now lives in one `chainGuard()`
+helper and every click site calls it against the screen it is about to act on.
+**Re-run the matrix; if MetaMask's Fuji add now shows `REJECTED 4001` and the
+connect cell reports no account, this is confirmed on both columns and fileable.**
 
 ## Likely root cause — not yet confirmed
 

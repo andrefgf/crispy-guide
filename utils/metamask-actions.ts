@@ -4,6 +4,7 @@ import {
   decideChainDialog,
   logChainVerdict,
   fingerprintFor,
+  type ChainDecision,
 } from './chain-policy'
 import { BASE_SEPOLIA, type Chain } from './networks'
 import fs from 'node:fs'
@@ -363,6 +364,29 @@ export async function getNotificationPage(
  * linger — so close it explicitly. Leaving it open would make the next call
  * think a stale request is still pending.
  */
+/**
+ * Read the CURRENT screen, decide, log. The only way to consult the chain policy.
+ *
+ * Exists because the policy kept being bypassed rather than being wrong. Three
+ * times now a code path has confirmed a wallet screen without asking it:
+ * `metamask-actions` originally had no chain check at all (retracted 07-30); the
+ * detector then failed to match MetaMask's wording, so every dialog fell through
+ * as `not-a-chain-dialog` (retracted 08-09); and the label fallback confirmed a
+ * screen the guard had never read (retracted 08-17).
+ *
+ * Same defect class each time — an approval that never consulted the policy —
+ * and each time the suite stayed green while a cell recorded a false pass. So
+ * the read/decide/log triple lives here, and every click site calls it against
+ * the screen it is about to act on. A screen may only be confirmed by a path
+ * that has just read it.
+ */
+async function chainGuard(page: Page, expectedChain: Chain): Promise<ChainDecision> {
+  const reading = await readChainDialog(page, 6000)
+  const verdict = decideChainDialog(reading, expectedChain.chainId, fingerprintFor(expectedChain))
+  logChainVerdict('metamask', verdict, reading)
+  return verdict.decision
+}
+
 async function resolveRequest(
   context: BrowserContext,
   extensionId: string,
@@ -448,11 +472,9 @@ async function resolveRequest(
     // the document has definitely rendered. Now "unreadable" means genuinely
     // anomalous rather than merely early, and declining it is safe.
     if (kind === 'confirm') {
-      const reading = await readChainDialog(page, 6000)
-      const verdict = decideChainDialog(reading, expectedChain.chainId, fingerprintFor(expectedChain))
-      logChainVerdict('metamask', verdict, reading)
+      const decision = await chainGuard(page, expectedChain)
 
-      if (verdict.decision === 'decline') {
+      if (decision === 'decline') {
         // Refuse THIS screen without abandoning the flow. A rejected network
         // switch is a legitimate outcome to measure, not a harness failure —
         // what the dApp does next is precisely what the matrix records.
@@ -482,16 +504,44 @@ async function resolveRequest(
     //    click the visible button by its label instead. The cancel path already
     //    works and stays a single deliberate act, so it's deliberately excluded.
     if (kind === 'confirm' && !page.isClosed() && (await showsRequest(page))) {
-      for (const name of [/^connect$/i, /^confirm$/i, /^approve$/i, /^sign$/i, /^next$/i]) {
-        const labelled = page.getByRole('button', { name }).last()
-        if (
-          (await labelled.isVisible().catch(() => false)) &&
-          (await labelled.isEnabled().catch(() => false))
-        ) {
-          if (MM_DEBUG === true) console.log(`[MM ${kind}-step${step}] fallback click by label ${name}`)
-          await labelled.click({ timeout: 5_000 }).catch(() => {})
-          await page.waitForTimeout(1500).catch(() => {})
-          break
+      // RE-RUN THE CHAIN GUARD BEFORE CLICKING BY LABEL.
+      //
+      // THIS IS WHERE THE GUARD LEAKED, and it cost a published verdict for the
+      // third time (run #22, 17 Aug). The guard at the top of the loop reads the
+      // screen that was showing THEN. This fallback fires after a click, when a
+      // request is still showing — and it cannot distinguish:
+      //
+      //   (a) the same screen, because the testid click didn't take   ← its purpose
+      //   (b) a DIFFERENT screen that rolled in behind it              ← the hole
+      //
+      // MetaMask's connect flow is multi-step: approving a connection to a chain
+      // it doesn't know rolls straight into "add this network". So the guard read
+      // screen (a) — the connect permission, correctly `not-a-chain-dialog` — and
+      // this block then confirmed Aave's Avalanche Fuji add on screen (b) without
+      // anyone looking. The trace shows it plainly:
+      //
+      //   add 0xa869 (Avalanche Fuji) → RESOLVED     ← approved by this block
+      //
+      // The wallet ended up on Fuji, Aave rendered its chip, and the cell logged
+      // `connect = pass`. That is the 2026-07-30 false pass, rebuilt from parts.
+      //
+      // A screen may only be confirmed by a path that has just read it.
+      const decision = await chainGuard(page, expectedChain)
+      if (decision === 'decline') {
+        await actionButton(page, 'cancel').click({ timeout: 8000 }).catch(() => {})
+        await page.waitForTimeout(1500).catch(() => {})
+      } else {
+        for (const name of [/^connect$/i, /^confirm$/i, /^approve$/i, /^sign$/i, /^next$/i]) {
+          const labelled = page.getByRole('button', { name }).last()
+          if (
+            (await labelled.isVisible().catch(() => false)) &&
+            (await labelled.isEnabled().catch(() => false))
+          ) {
+            if (MM_DEBUG === true) console.log(`[MM ${kind}-step${step}] fallback click by label ${name}`)
+            await labelled.click({ timeout: 5_000 }).catch(() => {})
+            await page.waitForTimeout(1500).catch(() => {})
+            break
+          }
         }
       }
     }
