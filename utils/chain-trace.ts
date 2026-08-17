@@ -45,24 +45,59 @@ export const CHAIN_REQUEST_HOOK = `(() => {
     var rdns = (d.info && d.info.rdns) || 'unknown'
     var orig = p.request.bind(p)
     p.request = function (args) {
+      var rec = null
       try {
         var m = args && args.method
         if (m === 'wallet_addEthereumChain' || m === 'wallet_switchEthereumChain') {
           var stack = ''
           try { stack = (new Error()).stack || '' } catch (err) { stack = '' }
-          window.__chainLog.push({
+          rec = {
             ms: Date.now() - t0,
             method: m,
             rdns: rdns,
             chainId: (args.params && args.params[0] && args.params[0].chainId) || null,
             chainName: (args.params && args.params[0] && args.params[0].chainName) || null,
+            outcome: 'pending',
+            code: null,
+            message: null,
+            msEnd: null,
             stackHead: stack.split('\\n').slice(1, 4).map(function (s) {
               return s.trim().replace(/^at\\s+/, '').slice(0, 90)
             })
-          })
+          }
+          window.__chainLog.push(rec)
         }
       } catch (err) { /* never let logging break a request */ }
-      return orig(args)
+
+      // RECORD THE WALLET'S ANSWER, NOT JUST THE DAPP'S QUESTION.
+      //
+      // Run #21: both columns received the same three requests in the same order
+      // (switch Fuji, add Fuji, add Base Sepolia) — the trace proves it — yet
+      // Rabby lost its connection and MetaMask kept it. The ask was identical, so
+      // the difference has to be in the ANSWER, and the answer was the one thing
+      // this hook never captured. EIP-1193 codes are not interchangeable:
+      // 4001 (user rejected) and 4902 (unrecognised chain) mean different things
+      // to a connector, and a dApp may treat one as fatal and the other as
+      // recoverable. A trace that logs only outgoing calls cannot see that.
+      //
+      // Passive observer: it attaches handlers that swallow, and returns the
+      // ORIGINAL promise, so the dApp's own error handling is untouched and no
+      // unhandled rejection is created.
+      var out = orig(args)
+      try {
+        if (rec && out && typeof out.then === 'function') {
+          out.then(
+            function (v) { rec.outcome = 'resolved'; rec.msEnd = Date.now() - t0; return v },
+            function (e) {
+              rec.outcome = 'rejected'
+              rec.code = (e && typeof e.code !== 'undefined') ? e.code : null
+              rec.message = String((e && e.message) || e || '').slice(0, 160)
+              rec.msEnd = Date.now() - t0
+            }
+          )
+        }
+      } catch (err) { /* observation must never change behaviour */ }
+      return out
     }
   })
 })()`
@@ -73,6 +108,12 @@ export type ChainLogEntry = {
   rdns: string
   chainId: string | null
   chainName: string | null
+  /** What the WALLET answered. 'pending' means it never settled. */
+  outcome: 'pending' | 'resolved' | 'rejected'
+  /** EIP-1193 code on rejection. 4001 = user rejected, 4902 = unrecognised chain. */
+  code: number | null
+  message: string | null
+  msEnd: number | null
   stackHead: string[]
 }
 
@@ -97,9 +138,18 @@ export async function readChainLog(page: Page, label: string): Promise<ChainLogE
 
   console.log(`[chain-order] ${label} — ${log.length} chain request(s)`)
   for (const e of log) {
+    // The ANSWER is printed on the same line as the ask. Run #21 spent a whole
+    // analysis on "both columns got the same requests" without being able to say
+    // what came back — which is where the difference actually lived.
+    const answer =
+      e.outcome === 'rejected'
+        ? `REJECTED code=${e.code ?? '?'}${e.message ? ` "${e.message.slice(0, 60)}"` : ''}`
+        : e.outcome === 'resolved'
+          ? 'resolved'
+          : 'PENDING (never settled)'
     console.log(
       `  +${String(e.ms).padStart(6)}ms  ${e.method}  chainId=${e.chainId ?? '-'}` +
-        `${e.chainName ? ` (${e.chainName})` : ''}  rdns=${e.rdns}`,
+        `${e.chainName ? ` (${e.chainName})` : ''}  rdns=${e.rdns}  → ${answer}`,
     )
     for (const frame of e.stackHead ?? []) console.log(`             ${frame}`)
   }

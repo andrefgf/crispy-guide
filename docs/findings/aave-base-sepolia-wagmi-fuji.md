@@ -1,6 +1,13 @@
-# Aave Base Sepolia disconnects a wallet that declines its Avalanche Fuji switch
+# Aave Base Sepolia disconnects Rabby when it declines the Avalanche Fuji switch
 
-**Status:** Confirmed, cross-wallet (MetaMask 13.39.1, Rabby 0.93.100). Reproduced in CI — Matrix run #20, 2026-08-15.
+**Status:** Confirmed for **Rabby 0.93.100**, consistently, runs #14–#21.
+**NOT confirmed cross-wallet** — see the correction below. MetaMask's result is
+unstable across runs and passed cleanly in #21.
+**Do not send this to Aave, or cite it publicly, until the MetaMask column is
+explained.** An earlier revision of this file claimed cross-wallet confirmation
+on the strength of run #20 alone; run #21 contradicted it. Recorded here rather
+than quietly edited, because a retraction that leaves no trace is how the
+matrix's own credibility goes.
 **Surface:** `app.aave.com` Base Sepolia market × EIP-1193 wallet connect.
 **Impact:** A wallet that stays on the market's own chain (Base Sepolia) cannot complete a connection — Aave shows no connected account.
 
@@ -23,18 +30,90 @@ The Fuji request carries full add-network parameters: `["43113", "Avalanche Fuji
 
 At the moment the chip is absent, the wallet is still authorised: `eth_accounts` returns the account and `eth_chainId` returns `0x14a34`. This is not a disconnected wallet — it is a dApp discarding a valid connection because the wallet refused to change chains.
 
-## Cross-wallet confirmation — Matrix run #20
+## CORRECTION — the cross-wallet claim did not survive run #21
 
-The same result on two independent wallets, driven through one identical chain-approval policy:
+Run #20 showed both columns failing identically, and this file called that
+cross-wallet confirmation. **Run #21, same branch, one commit later, disagreed:**
 
 ```
-Aave/MetaMask/connect  →  WALLET AUTHORISED BUT DAPP SHOWS NO ACCOUNT,
-                          chainId=0x14a34 (expected 0x14a34), chipVisible=false
-Aave/Rabby/connect     →  WALLET AUTHORISED BUT DAPP SHOWS NO ACCOUNT,
-                          chainId=0x14a34 (expected 0x14a34), chipVisible=false
+run #20   Aave/MetaMask/connect  = blocked (no chip within 30s)
+          Aave/Rabby/connect     = fail    (authorised, no chip)
+
+run #21   Aave/MetaMask/connect  = PASS    (chip="0xb1…c171", chain=base-sepolia)
+          Aave/Rabby/connect     = fail    (authorised, no chip)   ← unchanged
 ```
 
-Two different wallets producing an identical failure under identical, correct behaviour is strong evidence the cause is dApp-side, not wallet-side.
+So the honest position today:
+
+- **Rabby** — reproducible and stable across eight runs. Declines Fuji, ends on
+  Base Sepolia, authorised, and Aave renders no account. The controlled A/B
+  (approve Fuji → chip appears) was run **on Rabby only**.
+- **MetaMask** — **unstable**. Blocked in #20, passed in #21 with the chip
+  visible on Base Sepolia. Whatever the mechanism is, it does not stop MetaMask
+  the way it stops Rabby.
+
+The A/B in the table above is therefore evidence about **Rabby**, not about
+wallets in general, and the sentence "two wallets, one identical result" was a
+claim the harness had not measured. It is withdrawn.
+
+This changes what the finding IS, and arguably makes it more interesting: not
+"Aave breaks correct wallets" but **"Aave's Base Sepolia market treats two
+correctly-behaving wallets differently"** — which is precisely the per-wallet
+divergence the matrix exists to surface. It is also not yet a fileable bug
+report, because the mechanism behind the difference is unknown.
+
+### Why MetaMask survives — the run #21 log, and a testable hypothesis
+
+The ordering trace kills the obvious explanations first: **both wallets received
+the identical three requests, in the identical order, from the identical call
+site** (`Object.switchChain` in Aave's bundle, then our own add via `eval`):
+
+```
+switch → 0xa869 (Fuji) · add → 0xa869 (Fuji) · add → 0x14a34 (Base Sepolia)
+```
+
+So the dApp asks both columns the same question. The difference is in the
+**answer**, and the chain-verdict lines show two different shapes:
+
+```
+Rabby   connect:  decline: dialog never painted
+                  decline: wrong chain (saw 43113, want 84532)   ← a DIALOG was shown, and refused
+MetaMask connect: (no decline at all)
+                  approve: target chain offered (84532)          ← only OUR Base Sepolia add
+```
+
+Rabby raised a dialog for Fuji and our policy refused it. On MetaMask, in the
+passing cell, the Fuji requests **never reached our guard as a dialog** — MetaMask
+answered them itself. That is expected behaviour for a chain it doesn't have:
+`wallet_switchEthereumChain` to an unknown chain rejects immediately with
+**4902**, no user interaction.
+
+**Hypothesis: Aave's connector treats the two rejection codes differently.**
+
+| wallet | how the refusal happened | code the dApp sees | connection |
+|---|---|---|---|
+| Rabby | dialog shown → policy declines | **4001** user rejected | destroyed |
+| MetaMask | chain not installed → auto | **4902** unrecognised chain | survives |
+
+Same user intent — "this wallet will not move to Fuji" — expressed as two
+different codes, and only one of them is fatal. If it holds, the finding is not
+"Aave breaks wallets that decline" but the sharper **"Aave drops the connection
+on 4001 but tolerates 4902"**, which is a connector-level bug worth reporting.
+
+It also explains the instability: MetaMask's *other* cells in the same run DO log
+`decline: wrong chain (saw ?…)` — when the Fuji **add** dialog does get surfaced
+and refused, MetaMask should fail like Rabby. Whether that dialog appears is a
+timing race, which is exactly the coin-flip observed between runs #20 and #21.
+
+**Now instrumented, not yet confirmed.** `CHAIN_REQUEST_HOOK` recorded only the
+outgoing call; it now also records what came back — `outcome`, EIP-1193 `code`,
+and message — so the next run prints the answer beside the ask:
+
+```
++20063ms wallet_switchEthereumChain chainId=0xa869 → REJECTED code=4902 "…"
+```
+
+Confirm the codes, then this is fileable.
 
 ## Likely root cause — not yet confirmed
 

@@ -136,8 +136,17 @@ test.describe('Matrix — Aave × MetaMask', () => {
       verdict(
         'connect',
         ok ? 'pass' : 'fail',
+        // RECORD THE MEASURED CHAIN ON BOTH BRANCHES.
+        //
+        // `chain=${CHAIN}` is the market LABEL, a constant — it says which market
+        // was open, not where the wallet was. Reporting only that on a pass is
+        // how `connect = pass (chain=base-sepolia)` survived a run with the
+        // wallet sitting on Avalanche Fuji (retracted 09 Aug). The fail branch
+        // has carried the measured `chainId` ever since; the pass branch did
+        // not, so the cell could still only lie in the direction of good news.
         ok
-          ? `chip="${chip}", account=${account}, chain=${CHAIN}`
+          ? `chip="${chip}", account=${account}, chainId=${chainId} ` +
+            `(expected ${BASE_SEPOLIA.chainIdHex}), chain=${CHAIN}`
           : `WALLET AUTHORISED BUT DAPP SHOWS NO ACCOUNT — account=${account}, ` +
             `chainId=${chainId} (expected ${BASE_SEPOLIA.chainIdHex}), chipVisible=${chipAppeared}, chain=${CHAIN}`,
       )

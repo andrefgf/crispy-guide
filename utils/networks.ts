@@ -40,7 +40,15 @@ export const ETHEREUM_SEPOLIA = {
   chainIdHex: '0xaa36a7', // 11155111
   chainId: 11155111,
   chainName: 'Ethereum Sepolia',
-  nativeCurrency: { name: 'Ether', symbol: 'ETH', decimals: 18 },
+  // `SepoliaETH`, not `ETH` — and this is a real constraint, not a preference.
+  //
+  // Run #21: `wallet_addEthereumChain` was rejected with
+  //   -32602 "nativeCurrency.symbol does not match currency symbol for a network
+  //           the user already has added with the same chainId. Received: ETH"
+  // MetaMask ships Sepolia with the symbol `SepoliaETH`, and refuses to add a
+  // chain whose symbol disagrees with a built-in entry of the same id. So the
+  // cell failed and the wallet sat on mainnet — our config bug, not a wallet one.
+  nativeCurrency: { name: 'Ether', symbol: 'SepoliaETH', decimals: 18 },
   rpcUrls: [process.env.ETHEREUM_SEPOLIA_RPC_URL ?? 'https://ethereum-sepolia-rpc.publicnode.com'],
   blockExplorerUrls: ['https://sepolia.etherscan.io'],
 } as const

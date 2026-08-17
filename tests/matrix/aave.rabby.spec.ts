@@ -224,8 +224,12 @@ test.describe('Matrix — Aave × Rabby', () => {
       verdict(
         'connect',
         ok ? 'pass' : 'fail',
+        // Measured chain on BOTH branches — `chain=${CHAIN}` is the market label,
+        // not a measurement, and a pass that omits the real chainId is exactly
+        // how a wallet sitting on Fuji once read as green (retracted 09 Aug).
         ok
-          ? `chip="${chip}", account=${account}, ${providers}, chain=${CHAIN}`
+          ? `chip="${chip}", account=${account}, ${providers}, ` +
+            `chainId=${chainId} (expected ${BASE_SEPOLIA.chainIdHex}), chain=${CHAIN}`
           : `WALLET AUTHORISED BUT DAPP SHOWS NO ACCOUNT — ${providers}, ` +
             `chainId=${chainId} (expected ${BASE_SEPOLIA.chainIdHex}), chipVisible=${chipAppeared}, chain=${CHAIN}`,
       )
